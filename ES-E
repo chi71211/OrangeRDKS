@@ -77,7 +77,7 @@ def sanitize_filename(filename):
 # ==========================================
 # 2. 資料庫輔助與轉檔函式
 # ==========================================
-def get_scraped_tags(db_name='RDKS.db'):
+def get_scraped_tags(db_name='RDKS-E.db'):
     """讀取資料庫，獲取所有已經抓取過的 carTag 集合 (作為防重複護城河)"""
     if not os.path.exists(db_name):
         return set()
@@ -89,7 +89,7 @@ def get_scraped_tags(db_name='RDKS.db'):
     except:
         return set()
 
-def auto_export_sql(db_name='RDKS.db', sql_name='RDKS_Backup.sql'):
+def auto_export_sql(db_name='RDKS-E.db', sql_name='RDKS-E_Backup.sql'):
     """將 SQLite 資料庫匯出成純文字的 .sql 檔案"""
     print(f"\n[轉檔] 準備將 {db_name} 轉換為純文字 {sql_name} 檔案...")
     if not os.path.exists(db_name):
@@ -102,7 +102,7 @@ def auto_export_sql(db_name='RDKS.db', sql_name='RDKS_Backup.sql'):
     conn.close()
     print(f"[完成] 🎉 已經成功自動產出 {sql_name} 備份檔！")
 
-def save_batch_to_sql(batch_data, db_name='RDKS.db'):
+def save_batch_to_sql(batch_data, db_name='RDKS-E.db'):
     """獨立的批次存檔函式"""
     if not batch_data: return
     conn = sqlite3.connect(db_name)
@@ -124,7 +124,7 @@ def save_batch_to_sql(batch_data, db_name='RDKS.db'):
 # ==========================================
 def main_scraper_all():
     # 使用安全的資料夾名稱
-    folder_name = sanitize_filename("RDKS")
+    folder_name = sanitize_filename("RDKS-E")
     if not os.path.exists(folder_name):
         os.makedirs(folder_name)
 
@@ -137,7 +137,7 @@ def main_scraper_all():
         return
 
     # --- 建立帶有「防重複護城河」的資料表 ---
-    conn = sqlite3.connect('RDKS.db')
+    conn = sqlite3.connect('RDKS-E.db')
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tpms_sensors (
@@ -269,7 +269,7 @@ def main_scraper_all():
 
         # 🌟 超級防漏機制：直接從資料庫把該品牌所有資料撈出來轉成 Excel
         try:
-            conn = sqlite3.connect('RDKS.db')
+            conn = sqlite3.connect('RDKS-E.db')
             df_brand = pd.read_sql_query("SELECT * FROM tpms_sensors WHERE 品牌=?", conn, params=(target_brand,))
             conn.close()
 
