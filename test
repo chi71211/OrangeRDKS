@@ -18,7 +18,7 @@ from urllib3.util.retry import Retry
 MAX_RUNTIME_SECONDS = 5.5 * 3600 
 PROGRAM_START_TIME = time.time()
 
-# 🚀 新增：取得這支腳本所在的「絕對路徑」，防止 Mac 根目錄唯讀報錯
+# 取得這支腳本所在的「絕對路徑」，防止 Mac 根目錄唯讀報錯
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR, 'RDKS.db')
 SQL_PATH = os.path.join(SCRIPT_DIR, 'RDKS_Backup.sql')
@@ -82,15 +82,35 @@ def sanitize_filename(filename):
 # ==========================================
 # 2. 資料庫輔助與排版轉檔函式
 # ==========================================
+def find_key_value(d, keywords):
+    """智能遞迴搜尋：翻遍字典尋找目標隱藏欄位"""
+    if isinstance(d, dict):
+        label = str(d.get("name", d.get("key", d.get("label", "")))).lower()
+        if any(kw in label for kw in keywords) and ("value" in d or "val" in d):
+            val = d.get("value", d.get("val", ""))
+            if val and str(val).strip(): return str(val).strip()
+
+        for k, v in d.items():
+            k_lower = str(k).lower()
+            if any(kw in k_lower for kw in keywords) and not isinstance(v, (dict, list)):
+                if v is not None and str(v).strip():
+                    return str(v).strip()
+            res = find_key_value(v, keywords)
+            if res: return res
+    elif isinstance(d, list):
+        for item in d:
+            res = find_key_value(item, keywords)
+            if res: return res
+    return ""
+
 def get_scraped_models():
-    """讀取資料庫，這次不再用 carTag，而是記憶所有抓過的「品牌+車系+型號+年份」"""
+    """讀取資料庫，以「年份起點」作為判斷世代的唯一記憶"""
     if not os.path.exists(DB_PATH):
         return set()
     try:
         conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql_query("SELECT 品牌, 車系, 型號, 年份 FROM tpms_sensors", conn)
+        df = pd.read_sql_query("SELECT 品牌, 車系, 型號, 年份起點 FROM tpms_sensors", conn)
         conn.close()
-        # 轉換為 Tuple 集合 (Brand, Class, Model, Year)
         return set(tuple(str(x).strip() for x in row) for row in df.values)
     except:
         return set()
@@ -110,32 +130,28 @@ def save_batch_to_sql(batch_data):
     """批次存檔前，直接把資料合併排版，讓 SQLite 長得和 Excel 一模一樣！"""
     if not batch_data: return
     
-    # 1. 轉成 DataFrame 進行排版合併
     df = pd.DataFrame(batch_data)
     columns_order = [
-        '品牌', '車系', '型號', '年份', 'HSN', 'TSN', 
+        '品牌', '車系', '型號', '年份起點', '年份終點', 'HSN', 'TSN', 
         '建設日期(Baujahr)', 'OE感測器', '廠商(Hersteller)', '頻率(Frequenz)'
     ]
     df = df.reindex(columns=columns_order).fillna("")
     
-    # 2. 設定合併基準：只要這 6 個欄位一樣，就當作同一台車
-    group_cols = ['品牌', '車系', '型號', '年份', 'HSN', 'TSN']
-    
-    # 3. 執行合併：不同感測器/廠商用逗號串接
+    group_cols = ['品牌', '車系', '型號', '年份起點', '年份終點', 'HSN', 'TSN']
     df_merged = df.groupby(group_cols, as_index=False).agg(
         lambda x: ', '.join(sorted(list(set(str(v) for v in x if str(v).strip()))))
     )
-    df_merged = df_merged[columns_order] # 確保欄位順序正確
-
-    # 4. 寫入 SQLite
+    df_merged = df_merged[columns_order] 
+    
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     values_list = df_merged.values.tolist()
     
+    # 🌟 核心升級：REPLACE INTO 配合 年份起點，遇到年份更新或新增胎壓時，自動覆寫舊資料防重複！
     cursor.executemany('''
-        INSERT OR IGNORE INTO tpms_sensors 
-        (品牌, 車系, 型號, 年份, HSN, TSN, "建設日期(Baujahr)", OE感測器, "廠商(Hersteller)", "頻率(Frequenz)") 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        REPLACE INTO tpms_sensors 
+        (品牌, 車系, 型號, 年份起點, 年份終點, HSN, TSN, "建設日期(Baujahr)", OE感測器, "廠商(Hersteller)", "頻率(Frequenz)") 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', values_list)
     conn.commit()
     conn.close()
@@ -145,7 +161,7 @@ def save_batch_to_sql(batch_data):
 # ==========================================
 def main_scraper_all():
     folder_name = sanitize_filename("RDKS")
-    folder_path = os.path.join(SCRIPT_DIR, folder_name) # 確保資料夾建立在腳本旁邊
+    folder_path = os.path.join(SCRIPT_DIR, folder_name) 
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
 
@@ -156,7 +172,7 @@ def main_scraper_all():
         print("[錯誤] 無法取得品牌清單。")
         return
 
-    # --- 建立「完全沒有 carTag」的新版資料表 ---
+    # --- 建立「年份拆分版」的新資料表 ---
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
@@ -164,22 +180,22 @@ def main_scraper_all():
             品牌 TEXT,
             車系 TEXT,
             型號 TEXT,
-            年份 TEXT,
+            年份起點 TEXT,
+            年份終點 TEXT,
             HSN TEXT,
             TSN TEXT,
             "建設日期(Baujahr)" TEXT,
             OE感測器 TEXT,
             "廠商(Hersteller)" TEXT,
             "頻率(Frequenz)" TEXT,
-            UNIQUE(品牌, 車系, 型號, 年份, HSN, TSN) 
+            UNIQUE(品牌, 車系, 型號, 年份起點, HSN, TSN) 
         )
     ''')
     conn.commit()
     conn.close()
 
-    # 讀取已經抓過的「車型記憶」
     scraped_models = get_scraped_models()
-    print(f"[開始] 準備啟動！資料庫已有 {len(scraped_models)} 種不同年份型號的紀錄。")
+    print(f"[開始] 準備啟動！資料庫已有 {len(scraped_models)} 種不同世代型號的紀錄。")
     print("-" * 50)
 
     time_is_up = False 
@@ -209,7 +225,7 @@ def main_scraper_all():
                 
                 already_exists_streak = 0 
 
-                for version in versions:
+                for idx, version in enumerate(versions):
                     if time.time() - PROGRAM_START_TIME > MAX_RUNTIME_SECONDS:
                         print("\n⚠️ [超時警告] 執行時間已達極限！準備進入安全暫停程序...")
                         time_is_up = True
@@ -218,28 +234,30 @@ def main_scraper_all():
                     car_tag = str(version.get("tag") or version.get("carTag"))
                     if not car_tag: continue
 
-                    # 🌟 極速收索：判斷這台車是不是抓過了？
                     year_from = format_year(version.get("productionFrom"))
                     year_to = format_year(version.get("productionTo"))
                     model_version = version.get("version", "")
-                    year_str = f"{year_from} ~ {year_to}"
                     
-                    model_identity = (str(target_brand).strip(), str(car_class).strip(), str(model_version).strip(), str(year_str).strip())
+                    # 辨識世代身分：只用年份起點，容忍年份終點的變更
+                    model_identity = (str(target_brand).strip(), str(car_class).strip(), str(model_version).strip(), str(year_from).strip())
 
-                    # 第一道防線：如果這個「品牌+車系+型號+年份」已經在資料庫裡了
                     if model_identity in scraped_models:
-                        already_exists_streak += 1
-                        if already_exists_streak >= 5:
-                            print(f"    ⏭️ [極速跳過] 型號 {tg_id} 連續 5 個年份版本皆無更新，跳過後續舊車。")
-                            break 
-                        continue 
+                        # 🌟 邏輯升級：各型號的最新年份 (idx == 0) 無論如何強制檢查，揪出潛在的年份與胎壓更新
+                        if idx == 0:
+                            print(f"    🔄 [強制檢查] 確保型號 {tg_id} 最新年份胎壓與年份終點無更新...")
+                            already_exists_streak = 0
+                        else:
+                            already_exists_streak += 1
+                            if already_exists_streak >= 5:
+                                print(f"    ⏭️ [極速跳過] 型號 {tg_id} 連續 5 個舊年份皆無更新，跳過後續舊車。")
+                                break 
+                            continue 
                     else:
                         already_exists_streak = 0
 
                     time.sleep(0.3) 
                     
                     try:
-                        # 呼叫 API 取得 HSN/TSN 與 TPMS 資訊
                         car_details = get_car_hsn_tsn(car_tag)
                         hsn = car_details.get("hsn", "")
                         tsn = car_details.get("tsn", "")
@@ -250,24 +268,42 @@ def main_scraper_all():
                         if isinstance(tpms_data, dict) and "tpms" in tpms_data:
                             for sensor in tpms_data["tpms"]:
                                 if sensor.get("oeAm") == "O":
+                                    hersteller = str(sensor.get("hersteller", ""))
+                                    if not hersteller:
+                                        hersteller = find_key_value(sensor, ['hersteller', 'manufacturer', 'brand', 'marke'])
+
+                                    frequenz = str(sensor.get("frequenz", ""))
+                                    if not frequenz:
+                                        frequenz = find_key_value(sensor, ['frequenz', 'frequency', 'mhz'])
+                                    if not frequenz: 
+                                        s_dump = str(sensor).lower()
+                                        if '433' in s_dump: frequenz = '433'
+                                        elif '434' in s_dump: frequenz = '434'
+                                        elif '315' in s_dump: frequenz = '315'
+
+                                    baujahr = str(sensor.get("baujahr", ""))
+                                    if not baujahr:
+                                        baujahr = find_key_value(sensor, ['baujahr', 'production', 'year'])
+                                    if not baujahr or baujahr == "0000-00-00": 
+                                        baujahr = f"{year_from} ~ {year_to}"
+
                                     oe_sensors_info.append({
                                         "oe": str(sensor.get("tpmsDescFrontend", "")),
-                                        "baujahr": str(sensor.get("baujahr", sensor.get("productionFrom", ""))),
-                                        "hersteller": str(sensor.get("hersteller", sensor.get("manufacturer", sensor.get("brand", "")))),
-                                        "frequenz": str(sensor.get("frequenz", sensor.get("frequency", "")))
+                                        "baujahr": baujahr,
+                                        "hersteller": hersteller,
+                                        "frequenz": frequenz
                                     })
 
-                        # 如果沒抓到感測器，塞入空值以示記錄
                         if not oe_sensors_info:
                             oe_sensors_info = [{"oe": "", "baujahr": "", "hersteller": "", "frequenz": ""}]
 
-                        # 記錄原始資料到暫存袋子
                         for s_info in oe_sensors_info:
                             row_data = {
                                 "品牌": target_brand,
                                 "車系": car_class,
                                 "型號": model_version,
-                                "年份": year_str,
+                                "年份起點": year_from,
+                                "年份終點": year_to,
                                 "HSN": hsn,
                                 "TSN": tsn,
                                 "建設日期(Baujahr)": s_info["baujahr"],
@@ -277,7 +313,6 @@ def main_scraper_all():
                             }
                             batch_data.append(row_data)
                             
-                        # 記憶此車款，防止重複抓取
                         scraped_models.add(model_identity) 
 
                         if len(batch_data) >= BATCH_SIZE:
@@ -295,16 +330,22 @@ def main_scraper_all():
             save_batch_to_sql(batch_data)
             batch_data = []
 
-        # 🌟 匯出 Excel (因為 SQLite 已經排版好了，這裡只需一秒鐘直接匯出！)
+        # 🌟 匯出 Excel：輸出前自動將年份起點與終點合併回單一「年份」欄位
         try:
             conn = sqlite3.connect(DB_PATH)
             df_brand = pd.read_sql_query("SELECT * FROM tpms_sensors WHERE 品牌=?", conn, params=(target_brand,))
             conn.close()
 
             if not df_brand.empty:
+                df_brand['年份'] = df_brand['年份起點'].astype(str) + " ~ " + df_brand['年份終點'].astype(str)
+                columns_order = [
+                    '品牌', '車系', '型號', '年份', 'HSN', 'TSN', 
+                    '建設日期(Baujahr)', 'OE感測器', '廠商(Hersteller)', '頻率(Frequenz)'
+                ]
+                df_brand = df_brand.reindex(columns=columns_order)
+                
                 safe_brand_name = sanitize_filename(target_brand)
                 excel_name = os.path.join(folder_path, f"{safe_brand_name}_Data.xlsx")
-                # 不用再做任何排版，直接無腦輸出成 Excel
                 df_brand.to_excel(excel_name, index=False)
                 print(f"  📊 【{target_brand}】Excel 匯出成功！庫內共 {len(df_brand)} 筆已排版資料。")
         except Exception as e:
