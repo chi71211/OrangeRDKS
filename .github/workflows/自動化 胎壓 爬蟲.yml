@@ -60,6 +60,3 @@ jobs:
             git commit -m "🤖 [自動存檔] 爬蟲進度與資料庫更新 [skip ci]"
             git push
           fi
-```eof
-
-替換成這個版本後，您的 GitHub Actions 就能完美執行 6 小時的自動接力跑，並且絕對不會再報錯了！
