@@ -6,6 +6,8 @@
 
 本系統的核心運作邏輯如下圖所示：
 
+# RDKS 自動爬蟲系統 - 完整運作流程圖
+
 ```mermaid
 flowchart TD
     Start([啟動爬蟲]) 
@@ -64,8 +66,8 @@ flowchart TD
     --> CheckBatchSize{batch_data >= 80 筆?}
     
     CheckBatchSize -- 是 --> SaveDB[save_batch_to_sql<br>Pandas聚合 + REPLACE]
-    SaveDB --> Clear[batch_data.clear()]
-    Clear --> VersionLoop
+    SaveDB --> ClearBatch[清除 batch_data]
+    ClearBatch --> VersionLoop
     
     CheckBatchSize -- 否 --> VersionLoop
     
