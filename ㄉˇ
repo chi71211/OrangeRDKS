@@ -1,0 +1,282 @@
+"""
+AutoBild 爬蟲系統 - 終極企業版 (v3.1)
+修正版：解決 Read-only filesystem + 強化穩定性
+"""
+
+import nest_asyncio
+nest_asyncio.apply()
+import asyncio
+import os
+import sys
+import time
+import json
+import random
+import sqlite3
+import argparse
+import pandas as pd
+from datetime import datetime, timedelta
+from playwright.async_api import async_playwright
+from IPython.display import display
+
+# ==========================================
+# 配置（已修正路徑問題）
+# ==========================================
+class Config:
+    BASE_URL = "https://www.autobild.de"
+    CATALOG_URL = f"{BASE_URL}/marken-modelle/"
+    
+    # === 重點修正：使用可寫目錄 ===
+    CSV_DIR = os.path.expanduser("~/AutoBild_Exports")   # 使用家目錄
+    DB_FILE = os.path.expanduser("~/autobild_master.db")
+    PROGRESS_FILE = os.path.expanduser("~/scrape_progress.json")
+    
+    BATCH_SIZE = 80
+    FULL_RESCAN_DAYS = 7
+    DELAY_MIN = 0.65
+    DELAY_MAX = 1.60
+
+# ==========================================
+# 視覺化進度條
+# ==========================================
+class ProgressBar:
+    def __init__(self, total: int, desc: str = ""):
+        self.total = total
+        self.current = 0
+        self.desc = desc
+        self.start_time = time.time()
+   
+    def update(self, n: int = 1):
+        self.current += n
+        self._display()
+   
+    def _display(self):
+        elapsed = time.time() - self.start_time
+        speed = self.current / elapsed if elapsed > 0 else 0
+        eta = (self.total - self.current) / speed if speed > 0 else 0
+        pct = int((self.current / self.total) * 100) if self.total > 0 else 100
+       
+        bar = '█' * int(30 * self.current / self.total) + '░' * (30 - int(30 * self.current / self.total))
+        sys.stdout.write(f"\r{self.desc} |{bar}| {self.current}/{self.total} ({pct}%) ETA: {int(eta)}s ")
+        sys.stdout.flush()
+   
+    def finish(self):
+        print("\n" + "="*80)
+
+# ==========================================
+# 進度管理
+# ==========================================
+class ProgressManager:
+    def __init__(self):
+        self.data = {
+            "last_full_scan": datetime.now().isoformat(),
+            "completed_brands": [],
+            "completed_models": {}
+        }
+        self.load()
+   
+    def load(self):
+        if os.path.exists(Config.PROGRESS_FILE):
+            with open(Config.PROGRESS_FILE, 'r', encoding='utf-8') as f:
+                self.data = json.load(f)
+            last = datetime.fromisoformat(self.data.get("last_full_scan"))
+            if datetime.now() - last > timedelta(days=Config.FULL_RESCAN_DAYS):
+                print("🔄 超過7天，自動全面重掃...")
+                self.reset_progress()
+   
+    def save(self):
+        with open(Config.PROGRESS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+   
+    def mark_brand_done(self, brand: str):
+        if brand not in self.data["completed_brands"]:
+            self.data["completed_brands"].append(brand)
+            self.save()
+   
+    def mark_model_done(self, brand: str, model: str):
+        if brand not in self.data["completed_models"]:
+            self.data["completed_models"][brand] = []
+        if model not in self.data["completed_models"][brand]:
+            self.data["completed_models"][brand].append(model)
+            self.save()
+   
+    def reset_progress(self):
+        self.data["last_full_scan"] = datetime.now().isoformat()
+        self.data["completed_brands"] = []
+        self.data["completed_models"] = {}
+        self.save()
+
+# ==========================================
+# 資料庫管理
+# ==========================================
+class DatabaseManager:
+    def __init__(self):
+        os.makedirs(Config.CSV_DIR, exist_ok=True)
+        print(f"✅ 資料儲存目錄：{Config.CSV_DIR}")
+        self.conn = sqlite3.connect(Config.DB_FILE)
+        self.cursor = self.conn.cursor()
+        self.batch = []
+        self._init_db()
+   
+    def _init_db(self):
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS car_catalog (
+                id INTEGER PRIMARY KEY,
+                廠牌 TEXT, 車型 TEXT, 年份 TEXT, HSN_TSN TEXT,
+                UNIQUE(廠牌, 車型, 年份, HSN_TSN)
+            )
+        ''')
+        self.conn.commit()
+   
+    def add_to_batch(self, record: dict):
+        self.batch.append(record)
+        if len(self.batch) >= Config.BATCH_SIZE:
+            self.flush()
+   
+    def flush(self):
+        if not self.batch: return
+        for r in self.batch:
+            self.cursor.execute('''
+                INSERT OR IGNORE INTO car_catalog (廠牌, 車型, 年份, HSN_TSN)
+                VALUES (?, ?, ?, ?)
+            ''', (r.get('廠牌'), r.get('車型'), r.get('年份'), r.get('HSN_TSN')))
+        self.conn.commit()
+       
+        # 寫入 CSV
+        df = pd.DataFrame(self.batch)
+        for brand in df['廠牌'].unique():
+            sub = df[df['廠牌'] == brand]
+            path = os.path.join(Config.CSV_DIR, f"{brand}.csv")
+            sub.to_csv(path, mode='a', index=False, header=not os.path.exists(path), encoding='utf-8-sig')
+        self.batch.clear()
+   
+    def close(self):
+        self.flush()
+        self.conn.close()
+
+# ==========================================
+# 主爬蟲
+# ==========================================
+class MainScraper:
+    def __init__(self, test_mode=False):
+        self.test_mode = test_mode
+        self.prog = ProgressManager()
+        self.db = DatabaseManager()
+   
+    async def delay(self, min_d=Config.DELAY_MIN, max_d=Config.DELAY_MAX):
+        d = random.uniform(min_d, max_d)
+        if random.random() < 0.15: d += random.uniform(1.0, 3.0)
+        await asyncio.sleep(max(0.4, min(d, 5.0)))
+   
+    async def run(self):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            )
+            try:
+                print("🌐 正在連線 AutoBild...")
+                await page.goto(Config.CATALOG_URL, timeout=90000, wait_until="domcontentloaded")
+                await self.delay()
+               
+                # 取得品牌
+                links = await page.query_selector_all("a[href*='/marken-modelle/']")
+                brand_urls = []
+                seen = set()
+                for link in links:
+                    href = await link.get_attribute("href")
+                    if href and "/marken-modelle/" in href:
+                        full = Config.BASE_URL + href if not href.startswith("http") else href
+                        full = full.split("#")[0].split("?")[0]
+                        if full.endswith("/") and full not in seen:
+                            seen.add(full)
+                            brand_urls.append(full)
+               
+                if self.test_mode:
+                    brand_urls = brand_urls[:3]
+               
+                pbar = ProgressBar(len(brand_urls), "總品牌進度")
+               
+                for url in brand_urls:
+                    brand = url.strip("/").split("/")[-1].upper()
+                    if brand in self.prog.data["completed_brands"] and not self.test_mode:
+                        pbar.update()
+                        continue
+                   
+                    await page.goto(url, timeout=60000)
+                    await self.delay()
+                   
+                    # 車系
+                    model_links = await page.query_selector_all("a[href*='/marken-modelle/']")
+                    models = []
+                    for ml in model_links:
+                        h = await ml.get_attribute("href")
+                        if h and h.count("/") > url.count("/") and h.startswith(url):
+                            full_m = Config.BASE_URL + h if not h.startswith("http") else h
+                            models.append(full_m.split("#")[0])
+                    models = list(dict.fromkeys(models))
+                    if self.test_mode: models = models[:2]
+                   
+                    for murl in models:
+                        model_name = murl.strip("/").split("/")[-1].replace("-", " ").title()
+                        if model_name in self.prog.data.get("completed_models", {}).get(brand, []):
+                            continue
+                       
+                        await page.goto(murl, timeout=60000)
+                        await self.delay()
+                       
+                        # 資料提取
+                        data = await page.evaluate('''() => {
+                            const get = (k) => {
+                                let els = document.querySelectorAll('*');
+                                for (let el of els) {
+                                    if (el.textContent && el.textContent.includes(k)) {
+                                        let next = el.nextElementSibling;
+                                        if (next) return next.textContent.trim();
+                                    }
+                                }
+                                return 'N/A';
+                            };
+                            return {
+                                year: get('Bauzeitraum') || 'N/A',
+                                hsn: get('HSN/TSN') || get('Schlüsselnummer') || 'N/A'
+                            };
+                        }''')
+                       
+                        record = {
+                            "廠牌": brand,
+                            "車型": model_name,
+                            "年份": data["year"],
+                            "HSN_TSN": data["hsn"]
+                        }
+                        self.db.add_to_batch(record)
+                        self.prog.mark_model_done(brand, model_name)
+                        await self.delay()
+                   
+                    self.prog.mark_brand_done(brand)
+                    pbar.update()
+               
+                pbar.finish()
+                print("\n🎉 爬蟲任務成功完成！所有資料已安全儲存。")
+            except Exception as e:
+                print(f"\n❌ 執行錯誤: {e}")
+            finally:
+                self.db.close()
+                await browser.close()
+
+# ==========================================
+# 執行入口
+# ==========================================
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AutoBild 企業級爬蟲")
+    parser.add_argument("--test", action="store_true", help="測試模式")
+    parser.add_argument("--reset", action="store_true", help="重置所有進度")
+    args = parser.parse_args()
+   
+    if args.reset:
+        for f in [Config.DB_FILE, Config.PROGRESS_FILE]:
+            if os.path.exists(f): os.remove(f)
+        print("✅ 已重置系統")
+        sys.exit(0)
+   
+    scraper = MainScraper(test_mode=args.test)
+    asyncio.run(scraper.run())
