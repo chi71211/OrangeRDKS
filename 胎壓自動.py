@@ -4,13 +4,11 @@ import os
 # ==========================================
 # 解決 Windows 終端機中文亂碼問題
 # ==========================================
-# 偵測如果是在 Windows (win32) 執行，就強制把系統的標準輸出/錯誤流轉換為 utf-8 編碼，避免亂碼。
 if sys.platform == 'win32':
     import codecs
     sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
     sys.stderr = codecs.getwriter("utf-8")(sys.stderr.detach())
 else:
-    # Mac 或 Linux 環境的寫法
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 import sqlite3
@@ -25,19 +23,16 @@ from urllib3.util.retry import Retry
 from tqdm import tqdm
 
 # ==========================================
-# 全域設定 (檔案路徑與變數) - 更新為胎壓檢測器資料庫_V7
+# 全域設定 (檔案路徑與變數 V7)
 # ==========================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# 修改為您要求的名稱與 V7
 DB_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_V7.db')
 SQL_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_V7.sql')
 PROGRESS_FILE = os.path.join(SCRIPT_DIR, 'scrape_progress_V7.json')
 
-# 設定 Github Actions 的最大執行時間保護機制 (5.8 小時)
 MAX_RUNTIME_SECONDS = 5.8 * 3600 
 PROGRAM_START_TIME = time.time()
 
-# 設定 Requests (網路請求) 的重試機制
 session = requests.Session()
 retry_strategy = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
 adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -54,7 +49,6 @@ session.headers.update({
 # 1. 進度與週期管理
 # ==========================================
 def load_progress():
-    """讀取上次中斷的進度 (從 JSON 檔)"""
     if os.path.exists(PROGRESS_FILE):
         try:
             with open(PROGRESS_FILE, 'r', encoding='utf-8') as f:
@@ -64,7 +58,6 @@ def load_progress():
     return {"cycle_start": time.time(), "last_brand": "", "last_class": "", "last_tg": ""}
 
 def save_progress(brand="", car_class="", tg_id="", completed=False):
-    """將目前的進度寫入 JSON 檔，方便下次接關"""
     prog = load_progress()
     if completed:
         prog["cycle_start"] = time.time()
@@ -77,7 +70,6 @@ def save_progress(brand="", car_class="", tg_id="", completed=False):
         json.dump(prog, f)
 
 def check_7_day_cycle():
-    """檢查距離上次『完整爬完』是否已經超過 7 天"""
     prog = load_progress()
     if time.time() - prog.get("cycle_start", 0) > 604800:
         print("\n⏳ [週期檢查] 超過 7 天，啟動全面掃描（保留歷史資料）...")
@@ -91,7 +83,6 @@ def check_7_day_cycle():
 # 2. 安全網路請求 & API 輔助函式
 # ==========================================
 def safe_json_get(url, params=None, timeout=15):
-    """安全的發送 GET 請求並解析 JSON，如果被擋 (Rate Limit) 會自動等待"""
     try:
         r = session.get(url, params=params, timeout=timeout)
         r.raise_for_status()
@@ -115,22 +106,18 @@ def get_car_hsn_tsn(tag): return safe_json_get("https://www.interpneu-raederkonf
 def get_tpms(tag): return safe_json_get("https://www.interpneu-raederkonfigurator.de/api/tpms/carTpms", {"carTag": tag})
 
 def get_sensor_details(manufacturer_ids):
-    """批次取得感測器的『詳細資訊』API"""
     if not manufacturer_ids: return {}
     ids_str = ",".join(map(str, manufacturer_ids)) if isinstance(manufacturer_ids, list) else str(manufacturer_ids)
     return safe_json_get("https://www.interpneu-raederkonfigurator.de/api/gpsr/data", {"manufacturerIds": ids_str})
 
 def format_year(d): 
-    """將 API 回傳的日期截斷為 YYYY-MM"""
     return "至今" if not d or d == "0000-00-00" else d[:7]
 
 def sanitize_filename(name):
-    """清理資料夾或檔案名稱中的特殊字元"""
     name = re.sub(r'[\\/*?:"<>|]', '_', name)
     return name.replace('ü','ue').replace('ä','ae').replace('ö','oe').replace('ß','ss')
 
 def find_key_value(d, keywords):
-    """遞迴搜尋 JSON 樹狀結構中的關鍵字"""
     if isinstance(d, dict):
         for k, v in d.items():
             if any(kw in str(k).lower() for kw in keywords) and not isinstance(v, (dict, list)):
@@ -147,20 +134,13 @@ def find_key_value(d, keywords):
 # 3. 資料庫寫入邏輯
 # ==========================================
 def save_batch_to_sql(batch_data):
-    """將目前收集到的資料寫入 SQLite 資料庫"""
     if not batch_data: return
     df = pd.DataFrame(batch_data).fillna("")
 
-    # 為了配合 View 的完美合併，底層資料表只需要去除完全一模一樣的重複行即可
-    group_cols = ['Brand', 'Model', 'Typ', 'Start Year', 'End Year', 'HSN', 'TSN', 'OE sensor']
-    
-    agg_dict = {
-        'created date': 'first',
-        'Manufacturer': 'first',
-        'Frequency': 'first'
-    }
-
-    df_merged = df.groupby(group_cols, as_index=False).agg(agg_dict)
+    # 寫入資料庫「原始表」時，只要確保沒有「完全一樣的列」即可
+    # 所以把所有可能變動的欄位都加入分組，當作去重依據
+    group_cols = ['Brand', 'Model', 'Typ', 'Start Year', 'End Year', 'HSN', 'TSN', 'OE sensor', 'created date', 'Manufacturer', 'Frequency']
+    df_merged = df.drop_duplicates(subset=group_cols)
     
     cols = ['Brand', 'Model', 'Typ', 'Start Year', 'End Year', 'HSN', 'TSN',
             'created date', 'OE sensor', 'Manufacturer', 'Frequency']
@@ -177,7 +157,6 @@ def save_batch_to_sql(batch_data):
     conn.close()
 
 def auto_export_sql():
-    """傾印(Dump)成純文字的 SQL 備份檔"""
     if not os.path.exists(DB_PATH): return
     conn = sqlite3.connect(DB_PATH)
     with open(SQL_PATH, 'w', encoding='utf-8') as f:
@@ -190,7 +169,6 @@ def auto_export_sql():
 # 4. 主程式 (爬蟲核心迴圈)
 # ==========================================
 def main_scraper_all():
-    # 準備用來存放 Excel 報表的資料夾 (更新為 V7)
     folder_path = os.path.join(SCRIPT_DIR, sanitize_filename("胎壓檢測器資料庫_V7"))
     os.makedirs(folder_path, exist_ok=True)
 
@@ -203,15 +181,16 @@ def main_scraper_all():
     skip_mode = bool(prog.get("last_brand"))
 
     conn = sqlite3.connect(DB_PATH)
-    # 建立原始資料表 (OE sensor 作為 UNIQUE 的一部分，確保不同感測器分開儲存)
+    # 建立原始表
     conn.execute('''CREATE TABLE IF NOT EXISTS tpms_sensors (
         "Brand" TEXT, "Model" TEXT, "Typ" TEXT, "Start Year" TEXT, "End Year" TEXT,
         "HSN" TEXT, "TSN" TEXT, "created date" TEXT, 
         "OE sensor" TEXT, "Manufacturer" TEXT, "Frequency" TEXT,
-        UNIQUE("Brand", "Model", "Typ", "Start Year", "HSN", "TSN", "OE sensor")
+        UNIQUE("Brand", "Model", "Typ", "Start Year", "End Year", "HSN", "TSN", "OE sensor", "created date")
     )''')
     
-    # 🌟 建立 View 視圖：根據您的需求進行資料去重、合併跨年份、串連 HSN/TSN
+    # 🌟 核心：建立強大的 SQL View！
+    # 這裡直接在資料庫層級，把不同的 OE sensor、HSN、TSN 全部用逗號串接在一起！
     conn.execute('DROP VIEW IF EXISTS view_tpms_sensors_unique1;')
     conn.execute('''
         CREATE VIEW view_tpms_sensors_unique1 AS
@@ -223,13 +202,13 @@ def main_scraper_all():
             MAX("End Year") AS "End Year",
             GROUP_CONCAT(DISTINCT "HSN") AS "HSN",
             GROUP_CONCAT(DISTINCT "TSN") AS "TSN",
-            "created date",
-            "OE sensor",
-            "Manufacturer",
-            "Frequency"
+            GROUP_CONCAT(DISTINCT "created date") AS "created date",
+            GROUP_CONCAT(DISTINCT "OE sensor") AS "OE sensor",
+            GROUP_CONCAT(DISTINCT "Manufacturer") AS "Manufacturer",
+            GROUP_CONCAT(DISTINCT "Frequency") AS "Frequency"
         FROM tpms_sensors
-        -- 移除年份起點與終點的分組，讓不同年份段的相同車型可以順利合併
-        GROUP BY "Brand", "Model", "Typ", "created date", "OE sensor", "Manufacturer", "Frequency";
+        -- 🌟 只要 Brand, Model, Typ 一樣，全部硬擠進同一行！
+        GROUP BY "Brand", "Model", "Typ";
     ''')
     conn.commit()
     conn.close()
@@ -280,7 +259,6 @@ def main_scraper_all():
                 versions.sort(key=lambda x: x.get('productionFrom', ''), reverse=True)
 
                 for version in versions:
-                    # 安全機制：快到 GitHub Actions 6小時死線時主動暫停
                     if time.time() - PROGRAM_START_TIME > MAX_RUNTIME_SECONDS:
                         tqdm.write(f"\n⏱️ 警告：執行時間即將超過 6 小時限制！觸發安全暫停...")
                         time_limit_reached = True
@@ -387,18 +365,26 @@ def main_scraper_all():
                 tqdm.write(f"   ✅ Model完成: {car_class}")
 
         # ==========================================
-        # 🌟 匯出 Excel：直接讀取合併後的 View
+        # 🌟 匯出 Excel：讀取 View
         # ==========================================
         try:
             conn = sqlite3.connect(DB_PATH)
-            # 讀取 View 視圖，此時資料已經過跨年合併、去重、串聯
+            # 從 SQL View 讀取資料，此時已經依據 Brand/Model/Typ 自動合併好了！
             df = pd.read_sql_query('SELECT * FROM view_tpms_sensors_unique1 WHERE "Brand"=?', conn, params=(brand,))
             conn.close()
             
             if not df.empty:
-                # 重新組合漂亮的顯示年份
+                # 為了讓 SQL 的 GROUP_CONCAT(逗號) 後面有個漂亮的空格，我們在 Python 端做個小排版整理
+                def add_space_after_comma(text):
+                    if not isinstance(text, str): return text
+                    return ', '.join([s.strip() for s in text.split(',') if s.strip()])
+                
+                for col in ['HSN', 'TSN', 'created date', 'OE sensor', 'Manufacturer', 'Frequency']:
+                    if col in df.columns:
+                        df[col] = df[col].apply(add_space_after_comma)
+
+                # 組合年份並排版
                 df['年份'] = df['Start Year'].astype(str) + " ~ " + df['End Year'].astype(str)
-                # 調整匯出順序
                 order = ['Brand','Model','Typ','年份','HSN','TSN','created date','OE sensor','Manufacturer','Frequency']
                 df = df.reindex(columns=order)
                 
