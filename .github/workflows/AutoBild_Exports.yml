@@ -1,0 +1,62 @@
+name: 自動化 胎壓 爬蟲
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # 每天每 6 小時喚醒一次
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 
+
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 🌟 必須加上！確保能正確 push 進度回 GitHub
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安裝套件
+        run: |
+          pip install requests pandas openpyxl urllib3 tqdm # 🌟 必須補上 tqdm
+
+      - name: 執行爬蟲腳本
+        run: python ES1.py
+
+      - name: 上傳爬取結果 (Artifacts 備份)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RDKS_Data_Backup
+          path: |
+            /
+            AutoBild_Exports.db
+            AutoBild_Exports.sql
+            AutoBild_Exports.json
+
+      - name: 提交並推送更新進度到 GitHub
+        if: always()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # 🌟 修正檔名：必須與 Python 程式碼中輸出的檔名完全一致
+          git add -f AutoBild_Exports.db || true
+          git add -f AutoBild_Exports.sql || true
+          git add -f AutoBild_Exports.json || true
+          git add -f AutoBild_Exports/ || true
+          
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "沒有偵測到任何資料更新，跳過提交。"
+          else
+            git commit -m "🤖 [自動存檔] 爬蟲進度與資料庫更新 [skip ci]"
+            git push
+          fi
