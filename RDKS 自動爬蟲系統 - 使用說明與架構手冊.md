@@ -1,17 +1,25 @@
-🚗 RDKS 自動爬蟲系統 - 運作流程圖 (V7 終極版)
+# 🚗 RDKS 自動爬蟲系統 - 運作流程圖 (V10 終極版)
 
-本流程圖展示了 V7 版本的核心架構，包含：「雙重 API 深度抓取」、「6 小時超時防護」、「斷點無縫接關」以及「SQL View 自動聚合合併」機制。
+本流程圖展示了 V10 版本的核心架構，包含：「雙重 API 深度抓取」、「6 小時超時防護」、「斷點無縫接關」以及「SQL View 自動聚合合併」機制。
 
 ```mermaid
+flowchart TD
+    %% 自定義顏色與樣式
+    classDef startEnd fill:#ff5252,stroke:#333,stroke-width:2px,color:#fff,font-weight:bold;
+    classDef loop fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#000,font-weight:bold;
+    classDef check fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#000;
+    classDef api fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000,font-weight:bold;
+    classDef db fill:#ede7f6,stroke:#7b1fa2,stroke-width:2px,color:#000;
+    classDef process fill:#f5f5f5,stroke:#9e9e9e,stroke-width:2px,color:#000;
 
-    Start((啟動爬蟲)) ::: startEnd --> LoadProg[讀取上次進度 scrape_progress] ::: process
+    Start((啟動爬蟲)) ::: startEnd --> LoadProg[讀取上次進度] ::: process
     
-    LoadProg --> Check7Days{是否超過 7 天?} ::: check
-    Check7Days -- 是 --> FullMode[全面掃描模式 - 清除進度與資料庫] ::: process
-    Check7Days -- 否 --> ResumeMode[繼續進度模式 - 讀取斷點接關] ::: process
+    LoadProg --> Check7Days{超過 7 天?} ::: check
+    Check7Days -- 是 --> FullMode[全面掃描模式] ::: process
+    Check7Days -- 否 --> ResumeMode[繼續進度模式] ::: process
     
-    FullMode & ResumeMode --> SetupDB[(建立/連接 SQLite tpms_sensors)] ::: db
-    SetupDB --> InitView[(建立 SQL View 視圖 - 設定聚合邏輯)] ::: db
+    FullMode & ResumeMode --> SetupDB[(建立/連接 SQLite)] ::: db
+    SetupDB --> InitView[(建立 SQL View 視圖)] ::: db
     
     InitView --> BrandLoop(遍歷所有品牌 Brand) ::: loop
     
@@ -30,13 +38,13 @@
     
     SafeAPI --> CheckOE{有 OE 原廠感測器?} ::: check
     CheckOE -- 無 --> EmptyData[寫入空值保留車型] ::: process --> AddBatch
-    CheckOE -- 有 --> DeepAPI[API 2: gpsr/data 批次取得感測器深度資訊] ::: api
+    CheckOE -- 有 --> DeepAPI[API 2: 批次取得感測器深度資訊] ::: api
     
-    DeepAPI --> ExtractData[解析 Baujahr, Frequenz - 正則表達式強制挖字] ::: process
-    ExtractData --> AddBatch[加入 batch_data 暫存區] ::: process
+    DeepAPI --> ExtractData[解析 Baujahr 等資訊] ::: process
+    ExtractData --> AddBatch[加入暫存區] ::: process
     
     AddBatch --> BatchCheck{暫存超過 80 筆?} ::: check
-    BatchCheck -- 是 --> SaveDB[(寫入 tpms_sensors - REPLACE INTO)] ::: db
+    BatchCheck -- 是 --> SaveDB[(寫入 tpms_sensors 去重)] ::: db
     SaveDB --> ClearBatch[清空暫存區] ::: process --> VersionLoop
     BatchCheck -- 否 --> VersionLoop
     
