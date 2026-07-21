@@ -4,58 +4,54 @@
 
 ```mermaid
 flowchart TD
-    %% 自定義顏色與樣式
-    classDef startEnd fill:#ff5252,stroke:#333,stroke-width:2px,color:#fff,font-weight:bold;
-    classDef loop fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#000,font-weight:bold;
-    classDef check fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#000;
-    classDef api fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#000,font-weight:bold;
-    classDef db fill:#ede7f6,stroke:#7b1fa2,stroke-width:2px,color:#000;
-    classDef process fill:#f5f5f5,stroke:#9e9e9e,stroke-width:2px,color:#000;
-
-    Start((啟動爬蟲)) ::: startEnd --> LoadProg[讀取上次進度] ::: process
+    Start([啟動爬蟲程式]) --> LoadProg[讀取上次執行進度]
     
-    LoadProg --> Check7Days{超過 7 天?} ::: check
-    Check7Days -- 是 --> FullMode[全面掃描模式] ::: process
-    Check7Days -- 否 --> ResumeMode[繼續進度模式] ::: process
+    LoadProg --> Check7Days{距離上次全面掃描是否超過 7 天?}
     
-    FullMode & ResumeMode --> SetupDB[(建立/連接 SQLite)] ::: db
-    SetupDB --> InitView[(建立 SQL View 視圖)] ::: db
+    Check7Days -- 是 --> FullMode[啟動全面檢查模式 - 清除資料庫與進度紀錄]
+    Check7Days -- 否 --> ResumeMode[啟動繼續進度模式 - 讀取上次中斷的品牌]
     
-    InitView --> BrandLoop(遍歷所有品牌 Brand) ::: loop
+    FullMode --> SetupDB[(建立/連接 SQLite tpms_sensors 資料表)]
+    ResumeMode --> SetupDB
     
-    BrandLoop --> CheckSkipBrand{品牌需跳過?} ::: check
-    CheckSkipBrand -- 是 --> BrandLoop
-    CheckSkipBrand -- 否 --> SaveBrandProg[儲存品牌進度] ::: process
+    SetupDB --> InitView[(建立 SQL View 視圖 - 設定自動合併邏輯)]
     
-    SaveBrandProg --> ClassLoop(遍歷車系 Model) ::: loop
-    ClassLoop --> TGLoop(遍歷型號 Typ) ::: loop
+    InitView --> BrandLoop[遍歷所有汽車品牌 Brand]
     
-    TGLoop --> VersionLoop(遍歷年份版本) ::: loop
-    VersionLoop --> CheckTimeout{執行超時 5.8 小時?} ::: check
+    BrandLoop --> CheckSkip{品牌是否需跳過?}
+    CheckSkip -- 是 --> SkipBrand[略過此品牌] --> BrandLoop
+    CheckSkip -- 否 --> SaveProg[儲存目前進度]
     
-    CheckTimeout -- 是 --> Timeout((觸發安全暫停)) ::: startEnd
-    CheckTimeout -- 否 --> SafeAPI[API 1: 取得基礎 TPMS 與車輛 HSN/TSN] ::: api
+    SaveProg --> ClassLoop[遍歷該品牌所有車系 Model]
+    ClassLoop --> TGLoop[遍歷型號 Typ]
     
-    SafeAPI --> CheckOE{有 OE 原廠感測器?} ::: check
-    CheckOE -- 無 --> EmptyData[寫入空值保留車型] ::: process --> AddBatch
-    CheckOE -- 有 --> DeepAPI[API 2: 批次取得感測器深度資訊] ::: api
+    TGLoop --> VersionLoop[依年份從新到舊排序版本]
     
-    DeepAPI --> ExtractData[解析 Baujahr 等資訊] ::: process
-    ExtractData --> AddBatch[加入暫存區] ::: process
+    VersionLoop --> CheckTimeout{執行時間是否超時 5.8 小時?}
     
-    AddBatch --> BatchCheck{暫存超過 80 筆?} ::: check
-    BatchCheck -- 是 --> SaveDB[(寫入 tpms_sensors 去重)] ::: db
-    SaveDB --> ClearBatch[清空暫存區] ::: process --> VersionLoop
-    BatchCheck -- 否 --> VersionLoop
+    CheckTimeout -- 是 --> Timeout([觸發安全暫停])
+    CheckTimeout -- 否 --> ApiCall1[呼叫 API 1: 取得基礎 TPMS 與車輛 HSN/TSN]
     
-    VersionLoop -- 車型結束 --> TGLoop
-    TGLoop -- 車系結束 --> FlushRemain[(強制寫入殘留暫存資料)] ::: db
+    ApiCall1 --> CheckOE{是否有 OE 原廠感測器?}
+    CheckOE -- 無 --> EmptyData[寫入空值保留車型] --> AddBatch
+    CheckOE -- 有 --> ApiCall2[呼叫 API 2: 批次取得感測器深度資訊]
+    
+    ApiCall2 --> ParseData[解析感測器資訊 - 廠商, 頻率, 建造日期 Baujahr]
+    ParseData --> AddBatch[加入暫存佇列 batch_data]
+    
+    AddBatch --> CheckBatch{累積超過 80 筆?}
+    CheckBatch -- 是 --> SaveDB[(寫入資料庫使用 REPLACE INTO 覆寫)]
+    SaveDB --> ClearBatch[清空暫存區] --> VersionLoop
+    CheckBatch -- 否 --> VersionLoop
+    
+    VersionLoop -- 版本處理完畢 --> TGLoop
+    TGLoop -- 型號處理完畢 --> FlushRemain[(強制寫入殘留暫存資料)]
     FlushRemain --> ClassLoop
     
-    ClassLoop -- 品牌結束 --> ExportExcel[查詢 SQL View 匯出 Excel] ::: process
+    ClassLoop -- 車系處理完畢 --> ExportExcel[查詢 SQL View 匯出 Excel 報表]
     ExportExcel --> BrandLoop
     
-    BrandLoop -- 全部品牌完成 --> Finish[清除進度標記任務完成] ::: process
-    Timeout --> ExportSQL[(備份 .sql 檔案)] ::: db
-    Finish --> ExportSQL
-    ExportSQL --> End((程式安全結束)) ::: startEnd
+    BrandLoop -- 所有品牌處理完畢 --> Finalize[清除進度紀錄標記任務完成]
+    Timeout --> ExportSQL[(匯出 .sql 備份檔)]
+    Finalize --> ExportSQL
+    ExportSQL --> End([程式安全結束])
