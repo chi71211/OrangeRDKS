@@ -9,6 +9,26 @@ AutoBild 爬蟲系統 v11.0 - Windows 版本
   python autobild_win.py --brand VW   # 只抓特定品牌
 """
 
+import subprocess
+import sys
+
+def install_packages():
+    packages = ['nest_asyncio', 'playwright', 'pandas']
+    for pkg in packages:
+        try:
+            __import__(pkg.replace('-', '_'))
+        except ImportError:
+            print(f"Installing {pkg}...")
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg, '-q'])
+    try:
+        import playwright
+        subprocess.check_call([sys.executable, '-m', 'playwright', 'install', 'chromium'], 
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+install_packages()
+
 import nest_asyncio
 nest_asyncio.apply()
 import asyncio
@@ -59,7 +79,6 @@ class DatabaseManager:
                 Start_Year TEXT,
                 End_Year TEXT,
                 HSN_TSN TEXT,
-                Power TEXT,
                 UNIQUE(Brand, Model, Category, Fuel_Type, Typ, Start_Year, End_Year, HSN_TSN)
             )
         ''')
@@ -78,8 +97,7 @@ class DatabaseManager:
         self.cursor.execute('''
             CREATE VIEW view_car_catalog AS
             SELECT
-                Brand, Model, Category, Fuel_Type, Typ, Start_Year, End_Year,
-                HSN_TSN, Power
+                Brand, Model, Category, Fuel_Type, Typ, Start_Year, End_Year, HSN_TSN
             FROM car_catalog
             GROUP BY Brand, Model, Category, Fuel_Type, Typ, Start_Year, End_Year, HSN_TSN
         ''')
@@ -96,14 +114,13 @@ class DatabaseManager:
         for r in self.batch:
             self.cursor.execute('''
                 INSERT OR IGNORE INTO car_catalog
-                (Brand, Model, Category, Fuel_Type, Typ, Start_Year, End_Year, HSN_TSN, Power)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (Brand, Model, Category, Fuel_Type, Typ, Start_Year, End_Year, HSN_TSN)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 r.get('Brand', 'N/A'), r.get('Model', 'N/A'),
                 r.get('Category', 'N/A'), r.get('Fuel_Type', 'N/A'),
                 r.get('Typ', 'N/A'), r.get('Start_Year', 'N/A'),
-                r.get('End_Year', 'N/A'), r.get('HSN_TSN', 'N/A'),
-                r.get('Power', 'N/A')
+                r.get('End_Year', 'N/A'), r.get('HSN_TSN', 'N/A')
             ))
         self.conn.commit()
         self.batch.clear()
@@ -567,12 +584,6 @@ class AutoBildScraper:
                 continue
             fuel_zh = fuel_map.get(fuel.lower(), fuel)
 
-            power = v.get('power', 'N/A')
-            if power == 'N/A' and 'leistung' in tech_rows:
-                vals = tech_rows['leistung'].get('values', [])
-                if vals:
-                    power = vals[0] if vals[0] else 'N/A'
-
             year = page_data.get('jsonBuildingPeriod') or 'N/A'
             if year == 'N/A':
                 subtitle = page_data.get('headerSubtitle', '')
@@ -597,8 +608,7 @@ class AutoBildScraper:
                 'Typ': v.get('name', 'N/A'),
                 'Start_Year': start_year,
                 'End_Year': end_year,
-                'HSN_TSN': 'N/A',
-                'Power': power
+                'HSN_TSN': 'N/A'
             })
 
         return records
