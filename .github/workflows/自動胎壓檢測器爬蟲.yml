@@ -1,0 +1,60 @@
+name: 自動化 RDKS 爬蟲 (V10)
+
+# 設定排程時間
+on:
+  schedule:
+    - cron: '0 0,12 * * *' # 每天執行兩次，利用斷點接關機制推進
+  workflow_dispatch: # 允許手動隨時執行
+
+# 允許此工作流寫入回 GitHub
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # 安全超時保護 (約5.8小時)
+
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安裝所需套件 (包含 tqdm)
+        run: |
+          pip install requests pandas openpyxl urllib3 tqdm
+
+      - name: 執行爬蟲腳本
+        run: python 胎壓檢測器資料庫.py
+
+      - name: 上傳爬取結果 (Artifacts 下載備份)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RDKS_Database_V10
+          path: |
+            胎壓檢測器資料庫_V10/
+            胎壓檢測器資料庫_V10.db
+            胎壓檢測器資料庫_V10.sql
+
+      - name: 提交更新進度到 GitHub
+        if: always()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          git add -f 胎壓檢測器資料庫_V10.db || true
+          git add -f 胎壓檢測器資料庫_V10.sql || true
+          git add -f scrape_progress_V10.json || true
+          git add -f 胎壓檢測器資料庫_V10/ || true
+          
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "沒有偵測到任何資料更新，跳過提交。"
+          else
+            git commit -m "🤖 [V10 自動存檔] 資料庫與 Excel 更新 [skip ci]"
+            git push
+          fi
