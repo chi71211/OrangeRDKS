@@ -1,5 +1,5 @@
 """
-AutoBild 爬蟲系統 v11.0 - DOM 結構精準擷取版
+AutoBild 爬蟲系統 v11.0 - DOM 結構精準擷取版 (Windows 相容版)
 ================================================
 核心修正：
 1. 不再開新分頁爬 detail page → 直接在模型頁面提取所有資料
@@ -7,6 +7,7 @@ AutoBild 爬蟲系統 v11.0 - DOM 結構精準擷取版
 3. 新增 API 攔截器 → 嘗試從動態載入的 API 回應中提取 HSN/TSN
 4. 新增 model_progress 進度表 → 增量更新，跳過已完成車系
 5. 新增「顯示更多」自動展開 → 點擊所有 vv__fuelType-dataFooterToggle
+6. [Windows 修復] 移除 IPython 依賴，修正 Event loop 關閉報錯
 
 用法：
   python autobild_v11.py              # 完整掃描
@@ -27,11 +28,11 @@ import sqlite3
 import argparse
 import pandas as pd
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urljoin
 from playwright.async_api import async_playwright
-from IPython.display import display
 
+# 設定工作目錄為程式所在目錄
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -118,11 +119,20 @@ class DatabaseManager:
 
     def get_progress(self, brand: str, model: str):
         self.cursor.execute(
-            'SELECT variant_count FROM model_progress WHERE Brand=? AND Model=?',
+            'SELECT variant_count, last_scraped FROM model_progress WHERE Brand=? AND Model=?',
             (brand, model)
         )
         row = self.cursor.fetchone()
-        return row[0] if row else None
+        if not row:
+            return None
+        count, last_scraped = row
+        try:
+            scraped_dt = datetime.fromisoformat(last_scraped)
+            if datetime.now() - scraped_dt > timedelta(days=7):
+                return None
+        except Exception:
+            pass
+        return count
 
     def update_progress(self, brand: str, model: str, count: int):
         self.cursor.execute('''
@@ -516,13 +526,19 @@ class AutoBildScraper:
         body_type = page_data.get('jsonBodyType') or 'N/A'
         body_map = {
             'fliessheck': '掀背車',
+            'stufenheck': '斜背車',
+            'stlheck_fliessheck': '斜掀背車',
             'limousine': '轎車',
             'suv': '休旅車',
             'cabrio': '敞篷車',
             'coupe': '雙門跑車',
             'kombi': '旅行車',
             'van': '廂型車',
+            'bus': '巴士',
+            'select': '精選型',
+            'pritsche': '皮卡',
             'geländewagen': '越野車',
+            'gelaendewagen': '越野車',
             'kleinwagen': '小型車'
         }
         if body_type.lower() in body_map:
@@ -532,7 +548,12 @@ class AutoBildScraper:
             'benzin': '汽油',
             'diesel': '柴油',
             'elektro': '電動',
+            'elektrischer strom': '電力',
             'benzin/hybrid': '油電混合',
+            'benzin/elektro': '油電混合',
+            'benzin/elektro-plugIn': '插電式油電混合',
+            'benzin/gas': '汽油/天然氣',
+            'benzin/alkohol': '汽油/酒精混合',
             'erdgas': '天然氣',
             'autogas': '液化石油氣',
             'plug-in-hybrid': '插電式油電混合',
@@ -737,7 +758,8 @@ def show_status():
             print("📭 資料庫是空的")
         else:
             print("\n📊 資料庫統計：")
-            display(df)
+            # 這裡改成 print(df.to_string()) 以相容終端機顯示
+            print(df.to_string())
             total = pd.read_sql_query("SELECT COUNT(*) as Total FROM view_car_catalog", conn)
             print(f"\n  總筆數: {total.iloc[0]['Total']}")
     except Exception as e:
@@ -745,6 +767,9 @@ def show_status():
     finally:
         conn.close()
 
+# --- Windows 專屬的 asyncio 防報錯機制 ---
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AutoBild 爬蟲 v11.0")
