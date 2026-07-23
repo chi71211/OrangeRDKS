@@ -4,7 +4,7 @@ import subprocess
 import time
 
 # ==========================================
-# 🌟 1. 自動檢查與安裝所需套件 (VS Code 友善版)
+# 🌟 1. 自動檢查與安裝所需套件 (突破 uv / PEP 668 環境限制)
 # ==========================================
 def install_requirements():
     required_packages = {
@@ -24,12 +24,20 @@ def install_requirements():
     if missing_packages:
         print(f"📦 偵測到缺少必要套件，準備自動安裝: {', '.join(missing_packages)}")
         try:
+            # 第一次嘗試：標準安裝
             subprocess.check_call([sys.executable, "-m", "pip", "install", *missing_packages])
             print("✅ 套件安裝完成！正在載入...")
             time.sleep(1) 
-        except Exception as e:
-            print(f"❌ 自動安裝套件失敗: {e}")
-            sys.exit(1)
+        except subprocess.CalledProcessError:
+            try:
+                # 第二次嘗試：繞過 uv 或 PEP 668 的受保護環境
+                print("\n⚠️ 偵測到受保護的 Python 環境 (PEP 668)，啟動強制安裝模式...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", *missing_packages, "--break-system-packages"])
+                print("✅ 強制安裝完成！正在載入...")
+                time.sleep(1)
+            except Exception as e:
+                print(f"❌ 自動安裝套件失敗: {e}")
+                sys.exit(1)
 
 # 在匯入外部套件前，先執行自動安裝檢查
 install_requirements()
@@ -164,7 +172,6 @@ def sanitize_filename(name):
     name = re.sub(r'[\\/*?:"<>|]', '_', name)
     return name.replace('ü','ue').replace('ä','ae').replace('ö','oe').replace('ß','ss')
 
-# 🌟 已修復語法錯誤
 def find_key_value(d, keywords):
     if isinstance(d, dict):
         for k, v in d.items():
@@ -458,16 +465,3 @@ def main_scraper_all():
 
 if __name__ == "__main__":
     main_scraper_all()
-```eof
-
-### 💡 關於「每週自動更新」如何在 VS Code 實現？
-
-由於您希望直接在 VS Code 裡面執行：
-1. 您只要**每個禮拜在 VS Code 按一次「Run (播放鍵)」**。
-2. 程式碼內部（第 132 行的 `check_7_day_cycle`）會自己去計算時間。
-3. 只要它發現距離上次執行已經超過 7 天，就會自動在終端機印出：
-   `⏳ [每週更新檢查] 距離上次抓取已超過 7 天！`
-   `🔄 系統將自動清除舊進度，啟動全新一週的全面更新掃描...`
-4. 然後它就會自動把歷史資料庫更新到最新狀態。您不需要做任何設定！
-
-現在，請將這份程式碼貼到您的 VS Code 中，按一下右上角的播放鍵試試看吧！
