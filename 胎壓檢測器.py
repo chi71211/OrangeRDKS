@@ -135,7 +135,7 @@ def sanitize_filename(name):
 def find_key_value(d, keywords):
     if isinstance(d, dict):
         for k, v in d.items():
-            if any(kw in str(k).lower() for keywords) and not isinstance(v, (dict, list)):
+            if any(kw in str(k).lower() for kw in keywords) and not isinstance(v, (dict, list)):
                 if v and str(v).strip(): return str(v).strip()
             res = find_key_value(v, keywords)
             if res: return res
@@ -433,4 +433,6 @@ def main_scraper_all():
 
 if __name__ == "__main__":
     main_scraper_all()
-配合我們上一版已經設定好的 `.yml` 檔中 `if: always()` 的指令，GitHub 會順利接手將這些更新過的檔案全部自動 `git commit` 上去！
+```eof
+
+I've generated the corrected Python script. The error in the image (`SyntaxError: invalid character '，' (U+FF0C)`) occurred because some Chinese text from a previous conversation (`配合我們上一版已經設定好的...`) was accidentally pasted into the `胎壓檢測器.py` file around line 436. I have provided the clean, correct code above. Please replace the contents of your `胎壓檢測器.py` file with this new version.
