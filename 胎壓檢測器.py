@@ -1,8 +1,9 @@
 import sys
 import os
+import signal  # 🌟 新增：用來攔截系統中斷訊號
 
 # ==========================================
-# 解決 Windows 終端機中文亂碼問題
+# 解決 Windows/GitHub 終端機編碼問題
 # ==========================================
 if sys.platform == 'win32':
     import codecs
@@ -23,15 +24,29 @@ from urllib3.util.retry import Retry
 from tqdm import tqdm
 
 # ==========================================
-# 全域設定 (檔案路徑與變數 V7)
+# 全域設定 (V10 版本)
 # ==========================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_V7.db')
-SQL_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_V7.sql')
-PROGRESS_FILE = os.path.join(SCRIPT_DIR, 'scrape_progress_V7.json')
+DB_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_V10.db')
+SQL_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_V10.sql')
+PROGRESS_FILE = os.path.join(SCRIPT_DIR, 'scrape_progress_V10.json')
 
 MAX_RUNTIME_SECONDS = 5.8 * 3600 
 PROGRAM_START_TIME = time.time()
+
+# 🌟 新增：安全暫停旗標
+graceful_stop = False
+
+# 🌟 新增：中斷訊號處理函式
+def handle_signal(signum, frame):
+    global graceful_stop
+    print(f"\n\n🛑 [系統警告] 接收到外部中斷指令 (Cancel/Ctrl+C)！")
+    print("🛑 正在停止抓取新資料，準備進行「強制安全存檔」，請稍候幾秒鐘...")
+    graceful_stop = True
+
+# 註冊攔截器：當收到 SIGINT(Ctrl+C) 或 SIGTERM(GitHub Cancel) 時，觸發安全存檔
+signal.signal(signal.SIGINT, handle_signal)
+signal.signal(signal.SIGTERM, handle_signal)
 
 session = requests.Session()
 retry_strategy = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
@@ -80,7 +95,7 @@ def check_7_day_cycle():
     return prog, False
 
 # ==========================================
-# 2. 安全網路請求 & API 輔助函式
+# 2. API 輔助函式
 # ==========================================
 def safe_json_get(url, params=None, timeout=15):
     try:
@@ -89,7 +104,7 @@ def safe_json_get(url, params=None, timeout=15):
         return r.json() if r.text and r.text.strip() else []
     except Exception as e:
         if "429" in str(e):
-            print("⚠️ 觸發網站的 Rate Limit (429) 保護機制，強制等待 10 秒...")
+            print("⚠️ 觸發網站 Rate Limit (429)，強制等待 10 秒...")
             time.sleep(10)
         else:
             print(f"請求失敗 {url}: {e}")
@@ -120,7 +135,7 @@ def sanitize_filename(name):
 def find_key_value(d, keywords):
     if isinstance(d, dict):
         for k, v in d.items():
-            if any(kw in str(k).lower() for kw in keywords) and not isinstance(v, (dict, list)):
+            if any(kw in str(k).lower() for keywords) and not isinstance(v, (dict, list)):
                 if v and str(v).strip(): return str(v).strip()
             res = find_key_value(v, keywords)
             if res: return res
@@ -137,8 +152,6 @@ def save_batch_to_sql(batch_data):
     if not batch_data: return
     df = pd.DataFrame(batch_data).fillna("")
 
-    # 寫入資料庫「原始表」時，只要確保沒有「完全一樣的列」即可
-    # 所以把所有可能變動的欄位都加入分組，當作去重依據
     group_cols = ['Brand', 'Model', 'Typ', 'Start Year', 'End Year', 'HSN', 'TSN', 'OE sensor', 'created date', 'Manufacturer', 'Frequency']
     df_merged = df.drop_duplicates(subset=group_cols)
     
@@ -166,10 +179,12 @@ def auto_export_sql():
     print(f"🎉 SQL 備份完成: {os.path.basename(SQL_PATH)}")
 
 # ==========================================
-# 4. 主程式 (爬蟲核心迴圈)
+# 4. 主程式
 # ==========================================
 def main_scraper_all():
-    folder_path = os.path.join(SCRIPT_DIR, sanitize_filename("胎壓檢測器資料庫_V7"))
+    global graceful_stop # 引用全域變數
+
+    folder_path = os.path.join(SCRIPT_DIR, sanitize_filename("胎壓檢測器資料庫_V10"))
     os.makedirs(folder_path, exist_ok=True)
 
     brands = get_manufacturers()
@@ -181,7 +196,6 @@ def main_scraper_all():
     skip_mode = bool(prog.get("last_brand"))
 
     conn = sqlite3.connect(DB_PATH)
-    # 建立原始表
     conn.execute('''CREATE TABLE IF NOT EXISTS tpms_sensors (
         "Brand" TEXT, "Model" TEXT, "Typ" TEXT, "Start Year" TEXT, "End Year" TEXT,
         "HSN" TEXT, "TSN" TEXT, "created date" TEXT, 
@@ -189,8 +203,6 @@ def main_scraper_all():
         UNIQUE("Brand", "Model", "Typ", "Start Year", "End Year", "HSN", "TSN", "OE sensor", "created date")
     )''')
     
-    # 🌟 核心：建立強大的 SQL View！
-    # 這裡直接在資料庫層級，把不同的 OE sensor、HSN、TSN 全部用逗號串接在一起！
     conn.execute('DROP VIEW IF EXISTS view_tpms_sensors_unique1;')
     conn.execute('''
         CREATE VIEW view_tpms_sensors_unique1 AS
@@ -207,7 +219,6 @@ def main_scraper_all():
             GROUP_CONCAT(DISTINCT "Manufacturer") AS "Manufacturer",
             GROUP_CONCAT(DISTINCT "Frequency") AS "Frequency"
         FROM tpms_sensors
-        -- 🌟 只要 Brand, Model, Typ 一樣，全部硬擠進同一行！
         GROUP BY "Brand", "Model", "Typ";
     ''')
     conn.commit()
@@ -220,7 +231,8 @@ def main_scraper_all():
     print(f"🔍 共 {len(brands)} 個Brand\n")
 
     for brand in tqdm(brands, desc="總進度", ncols=100):
-        if time_limit_reached: break
+        # 🌟 每個迴圈開頭都檢查是否被手動暫停
+        if time_limit_reached or graceful_stop: break
 
         if skip_mode and brand != prog.get("last_brand"):
             tqdm.write(f"⏭️ 已完成: {brand} ✅")
@@ -238,13 +250,13 @@ def main_scraper_all():
         if not isinstance(classes, list): classes = []
 
         for car_class in tqdm(classes, desc=f"{brand} Model", leave=False, ncols=80):
-            if time_limit_reached: break
+            if time_limit_reached or graceful_stop: break
 
             type_groups = get_type_groups(brand, car_class)
             if not isinstance(type_groups, list): type_groups = []
 
             for tg_data in type_groups:
-                if time_limit_reached: break
+                if time_limit_reached or graceful_stop: break
 
                 tg_id = tg_data.get("group") if isinstance(tg_data, dict) else None
                 if not tg_id: continue
@@ -259,8 +271,12 @@ def main_scraper_all():
                 versions.sort(key=lambda x: x.get('productionFrom', ''), reverse=True)
 
                 for version in versions:
+                    # 🌟 第四層迴圈也檢查手動暫停
+                    if graceful_stop:
+                        break
+
                     if time.time() - PROGRAM_START_TIME > MAX_RUNTIME_SECONDS:
-                        tqdm.write(f"\n⏱️ 警告：執行時間即將超過 6 小時限制！觸發安全暫停...")
+                        tqdm.write(f"\n⏱️ 警告：執行時間即將超過 6 小時限制！觸發自動安全暫停...")
                         time_limit_reached = True
                         break
 
@@ -361,20 +377,16 @@ def main_scraper_all():
                 save_batch_to_sql(batch_data)
                 batch_data.clear()
 
-            if not time_limit_reached:
+            if not time_limit_reached and not graceful_stop:
                 tqdm.write(f"   ✅ Model完成: {car_class}")
 
-        # ==========================================
-        # 🌟 匯出 Excel：讀取 View
-        # ==========================================
+        # 就算是中斷，只要這個品牌有任何一點資料，我們就照常把它匯出
         try:
             conn = sqlite3.connect(DB_PATH)
-            # 從 SQL View 讀取資料，此時已經依據 Brand/Model/Typ 自動合併好了！
             df = pd.read_sql_query('SELECT * FROM view_tpms_sensors_unique1 WHERE "Brand"=?', conn, params=(brand,))
             conn.close()
             
             if not df.empty:
-                # 為了讓 SQL 的 GROUP_CONCAT(逗號) 後面有個漂亮的空格，我們在 Python 端做個小排版整理
                 def add_space_after_comma(text):
                     if not isinstance(text, str): return text
                     return ', '.join([s.strip() for s in text.split(',') if s.strip()])
@@ -383,34 +395,42 @@ def main_scraper_all():
                     if col in df.columns:
                         df[col] = df[col].apply(add_space_after_comma)
 
-                # 組合年份並排版
                 df['年份'] = df['Start Year'].astype(str) + " ~ " + df['End Year'].astype(str)
                 order = ['Brand','Model','Typ','年份','HSN','TSN','created date','OE sensor','Manufacturer','Frequency']
                 df = df.reindex(columns=order)
                 
                 path = os.path.join(folder_path, f"{sanitize_filename(brand)}_Data.xlsx")
                 df.to_excel(path, index=False)
-                if not time_limit_reached:
+                if not time_limit_reached and not graceful_stop:
                     tqdm.write(f"✅ {brand} Excel 匯出完成 → {len(df)} 筆")
         except Exception as e:
             tqdm.write(f"⚠️ Excel 匯出失敗: {e}")
 
-        if not time_limit_reached:
+        if not time_limit_reached and not graceful_stop:
             completed_brands.append(brand)
             tqdm.write(f"🎉 Brand完成: 【{brand}】 ✅")
 
+    # 🌟 終極防線：無論迴圈怎麼斷掉，最後一定要把暫存區殘留的資料寫進去！
+    if batch_data:
+        save_batch_to_sql(batch_data)
+        batch_data.clear()
+
     print("\n" + "="*60)
     if time_limit_reached:
-        print("⏸️ 爬蟲任務因接近 6 小時限制而暫停！")
-        print(f"進度已安全儲存，下次將從斷點繼續。")
+        print("⏸️ 爬蟲任務因接近 6 小時限制而暫停！進度已安全儲存。")
+    elif graceful_stop:
+        print("🛑 人為介入 (Cancel/Ctrl+C)！強制中斷任務。")
+        print("✅ 殘留資料已強制寫入資料庫，進度已儲存。下次將從斷點精準繼續！")
     else:
         print("🎊 爬蟲任務全部完成！")
         save_progress(completed=True)
 
-    print(f"✅ 此次共完整處理 {len(completed_brands)} 個Brand")
+    print(f"✅ 此次共處理 {len(completed_brands)} 個Brand")
     print("="*60)
-
+    
+    # 🌟 確保 .sql 一定會被產出
     auto_export_sql()
 
 if __name__ == "__main__":
     main_scraper_all()
+配合我們上一版已經設定好的 `.yml` 檔中 `if: always()` 的指令，GitHub 會順利接手將這些更新過的檔案全部自動 `git commit` 上去！
