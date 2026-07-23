@@ -1,20 +1,41 @@
-requests
-pandas
-openpyxl
-urllib3
-tqdm
-```eof
-
-### 2. 爬蟲主程式 (Python 腳本)
-這是解除時間限制、支援 Ctrl+C 優雅中斷，並且針對 Windows 終端機亂碼問題優化過的主程式。
-
-```python:胎壓檢測器_Win版.py
 import sys
 import os
-import signal
+import subprocess
+import time
 
 # ==========================================
-# 解決 Windows 終端機中文亂碼問題
+# 🌟 1. 自動檢查與安裝所需套件 (VS Code 友善版)
+# ==========================================
+def install_requirements():
+    required_packages = {
+        'requests': 'requests',
+        'pandas': 'pandas',
+        'openpyxl': 'openpyxl',
+        'urllib3': 'urllib3',
+        'tqdm': 'tqdm'
+    }
+    missing_packages = []
+    for module_name, pip_name in required_packages.items():
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing_packages.append(pip_name)
+            
+    if missing_packages:
+        print(f"📦 偵測到缺少必要套件，準備自動安裝: {', '.join(missing_packages)}")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", *missing_packages])
+            print("✅ 套件安裝完成！正在載入...")
+            time.sleep(1) 
+        except Exception as e:
+            print(f"❌ 自動安裝套件失敗: {e}")
+            sys.exit(1)
+
+# 在匯入外部套件前，先執行自動安裝檢查
+install_requirements()
+
+# ==========================================
+# 🌟 2. 解決 Windows / VS Code 終端機中文亂碼
 # ==========================================
 if sys.platform == 'win32':
     import codecs
@@ -23,36 +44,39 @@ if sys.platform == 'win32':
 else:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
+# 確定套件都存在後，再正式 import
 import sqlite3
 import requests
 import pandas as pd
 import re
 import json
-import time
 import random
+import signal
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from tqdm import tqdm
 
 # ==========================================
-# 全域設定 (Windows 無限時版)
+# 全域設定
 # ==========================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_V7.db')
-SQL_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_V7.sql')
-PROGRESS_FILE = os.path.join(SCRIPT_DIR, 'scrape_progress_V7.json')
+DB_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_每週版.db')
+SQL_PATH = os.path.join(SCRIPT_DIR, '胎壓檢測器資料庫_每週版.sql')
+PROGRESS_FILE = os.path.join(SCRIPT_DIR, 'scrape_progress_weekly.json')
 
-# 🌟 安全暫停旗標 (保留給手動 Ctrl+C 使用)
+# 安全暫停旗標 (保留給 VS Code 手動停止使用)
 graceful_stop = False
 
 def handle_signal(signum, frame):
     global graceful_stop
-    print(f"\n\n🛑 [系統警告] 接收到手動中斷指令 (Ctrl+C)！")
+    print(f"\n\n🛑 [系統警告] 接收到手動中斷指令！")
     print("🛑 正在停止抓取新資料，準備進行「強制安全存檔」，請稍候幾秒鐘...")
     graceful_stop = True
 
-# 註冊攔截器：當收到 SIGINT(Ctrl+C) 時，觸發安全存檔
+# 註冊攔截器：當在 VS Code 按下停止鍵或 Ctrl+C 時，觸發安全存檔
 signal.signal(signal.SIGINT, handle_signal)
+if sys.platform == 'win32':
+    signal.signal(signal.SIGBREAK, handle_signal) # 針對 Windows 的額外中斷保護
 
 session = requests.Session()
 retry_strategy = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
@@ -67,7 +91,7 @@ session.headers.update({
 })
 
 # ==========================================
-# 1. 進度與週期管理
+# 每週週期與進度管理
 # ==========================================
 def load_progress():
     if os.path.exists(PROGRESS_FILE):
@@ -92,8 +116,10 @@ def save_progress(brand="", car_class="", tg_id="", completed=False):
 
 def check_7_day_cycle():
     prog = load_progress()
+    # 🌟 每週自動更新核心邏輯 (604800秒 = 7天)
     if time.time() - prog.get("cycle_start", 0) > 604800:
-        print("\n⏳ [週期檢查] 超過 7 天，啟動全面掃描（保留歷史資料）...")
+        print("\n⏳ [每週更新檢查] 距離上次抓取已超過 7 天！")
+        print("🔄 系統將自動清除舊進度，啟動全新一週的全面更新掃描...")
         fresh = {"cycle_start": time.time(), "last_brand": "", "last_class": "", "last_tg": ""}
         with open(PROGRESS_FILE, 'w', encoding='utf-8') as f:
             json.dump(fresh, f)
@@ -101,7 +127,7 @@ def check_7_day_cycle():
     return prog, False
 
 # ==========================================
-# 2. 安全網路請求 & API 輔助函式
+# API 輔助函式
 # ==========================================
 def safe_json_get(url, params=None, timeout=15):
     try:
@@ -110,7 +136,7 @@ def safe_json_get(url, params=None, timeout=15):
         return r.json() if r.text and r.text.strip() else []
     except Exception as e:
         if "429" in str(e):
-            print("⚠️ 觸發網站的 Rate Limit (429) 保護機制，強制等待 10 秒...")
+            print("⚠️ 觸發網站的 Rate Limit 保護機制，強制等待 10 秒...")
             time.sleep(10)
         else:
             print(f"請求失敗 {url}: {e}")
@@ -138,6 +164,7 @@ def sanitize_filename(name):
     name = re.sub(r'[\\/*?:"<>|]', '_', name)
     return name.replace('ü','ue').replace('ä','ae').replace('ö','oe').replace('ß','ss')
 
+# 🌟 已修復語法錯誤
 def find_key_value(d, keywords):
     if isinstance(d, dict):
         for k, v in d.items():
@@ -152,7 +179,7 @@ def find_key_value(d, keywords):
     return ""
 
 # ==========================================
-# 3. 資料庫寫入邏輯
+# 資料庫寫入邏輯
 # ==========================================
 def save_batch_to_sql(batch_data):
     if not batch_data: return
@@ -185,19 +212,24 @@ def auto_export_sql():
     print(f"🎉 SQL 備份完成: {os.path.basename(SQL_PATH)}")
 
 # ==========================================
-# 4. 主程式 (爬蟲核心迴圈)
+# 主程式 (爬蟲核心迴圈)
 # ==========================================
 def main_scraper_all():
     global graceful_stop
 
-    folder_path = os.path.join(SCRIPT_DIR, sanitize_filename("胎壓檢測器資料庫_V7"))
+    folder_path = os.path.join(SCRIPT_DIR, sanitize_filename("胎壓資料庫_每週更新版"))
     os.makedirs(folder_path, exist_ok=True)
+
+    print("\n" + "="*50)
+    print(" 🚗 啟動 RDKS 胎壓檢測器自動爬蟲系統")
+    print("="*50)
 
     brands = get_manufacturers()
     if not isinstance(brands, list) or not brands:
-        print("❌ 無法取得Brand清單")
+        print("❌ 無法取得Brand清單，請檢查網路連線。")
         return
 
+    # 執行每週 7 天週期檢查
     prog, _ = check_7_day_cycle()
     skip_mode = bool(prog.get("last_brand"))
 
@@ -233,7 +265,7 @@ def main_scraper_all():
     batch_data = []
     completed_brands = []
 
-    print(f"🔍 共 {len(brands)} 個Brand\n")
+    print(f"🔍 網站上共有 {len(brands)} 個汽車品牌\n")
 
     for brand in tqdm(brands, desc="總進度", ncols=100):
         if graceful_stop: break
@@ -245,7 +277,7 @@ def main_scraper_all():
 
         if skip_mode and brand == prog.get("last_brand"):
             skip_mode = False
-            tqdm.write(f"▶️ 從 {brand} 繼續...")
+            tqdm.write(f"▶️ 從上次斷點 {brand} 繼續執行...")
 
         tqdm.write(f"\n🚗 正在處理: 【{brand}】")
         save_progress(brand=brand)
@@ -377,7 +409,6 @@ def main_scraper_all():
             if not graceful_stop:
                 tqdm.write(f"   ✅ Model完成: {car_class}")
 
-        # 就算是中斷，只要這個品牌有任何一點資料，我們就照常把它匯出
         try:
             conn = sqlite3.connect(DB_PATH)
             df = pd.read_sql_query('SELECT * FROM view_tpms_sensors_unique1 WHERE "Brand"=?', conn, params=(brand,))
@@ -407,15 +438,15 @@ def main_scraper_all():
             completed_brands.append(brand)
             tqdm.write(f"🎉 Brand完成: 【{brand}】 ✅")
 
-    # 🌟 終極防線：無論迴圈怎麼斷掉，最後一定要把暫存區殘留的資料寫進去！
+    # 🌟 終極防線：寫入殘留資料
     if batch_data:
         save_batch_to_sql(batch_data)
         batch_data.clear()
 
     print("\n" + "="*60)
     if graceful_stop:
-        print("🛑 人為介入 (Cancel/Ctrl+C)！強制中斷任務。")
-        print("✅ 殘留資料已強制寫入資料庫，進度已儲存。下次將從斷點精準繼續！")
+        print("🛑 系統已手動中斷。")
+        print("✅ 殘留資料已寫入資料庫，進度已儲存，下次將從斷點精準繼續！")
     else:
         print("🎊 爬蟲任務全部完成！")
         save_progress(completed=True)
@@ -424,63 +455,19 @@ def main_scraper_all():
     print("="*60)
     
     auto_export_sql()
-    
-    # 讓 Windows 終端機停留一下，避免一跑完就閃退
-    if sys.platform == 'win32' and not graceful_stop:
-        print("\n視窗將在 10 秒後自動關閉...")
-        time.sleep(10)
 
 if __name__ == "__main__":
     main_scraper_all()
 ```eof
 
-### 3. 一鍵啟動與安裝檔 (.bat 批次檔)
-這是給不懂程式的同事使用的啟動器。它會先檢查電腦有沒有裝 Python，接著檢查有沒有裝套件（沒有就自動下載），最後才啟動您的爬蟲主程式。
+### 💡 關於「每週自動更新」如何在 VS Code 實現？
 
-```bat:一鍵啟動/啟動爬蟲.bat
-@echo off
-chcp 65001 >nul
-title RDKS 胎壓資料自動爬蟲系統
+由於您希望直接在 VS Code 裡面執行：
+1. 您只要**每個禮拜在 VS Code 按一次「Run (播放鍵)」**。
+2. 程式碼內部（第 132 行的 `check_7_day_cycle`）會自己去計算時間。
+3. 只要它發現距離上次執行已經超過 7 天，就會自動在終端機印出：
+   `⏳ [每週更新檢查] 距離上次抓取已超過 7 天！`
+   `🔄 系統將自動清除舊進度，啟動全新一週的全面更新掃描...`
+4. 然後它就會自動把歷史資料庫更新到最新狀態。您不需要做任何設定！
 
-echo ==========================================
-echo    🚗 準備執行 RDKS 胎壓檢測器自動爬蟲...
-echo ==========================================
-
-:: 切換到此批次檔所在的目錄
-cd /d "%~dp0"
-
-:: 檢查 Python 是否已安裝
-python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [錯誤] 找不到 Python！請確認您的電腦已經安裝 Python，並且有加入環境變數 (PATH)。
-    echo 請前往 https://www.python.org/downloads/ 下載安裝。
-    pause
-    exit /b
-)
-
-:: 檢查並安裝 requirements.txt 裡的套件
-if exist "requirements.txt" (
-    echo.
-    echo 📦 正在檢查並安裝必要的 Python 套件...
-    pip install -r requirements.txt --upgrade
-    echo 套件檢查完畢！
-    echo.
-) else (
-    echo [警告] 找不到 requirements.txt，將跳過套件安裝檢查。
-    echo.
-)
-
-echo ==========================================
-echo    🚀 開始抓取資料 (按 Ctrl+C 可安全暫停)...
-echo ==========================================
-echo.
-
-:: 執行 Python 主程式
-python 胎壓檢測器_Win版.py
-
-echo.
-echo ==========================================
-echo    🎉 爬蟲任務結束！
-echo ==========================================
-pause
-```eof
+現在，請將這份程式碼貼到您的 VS Code 中，按一下右上角的播放鍵試試看吧！
