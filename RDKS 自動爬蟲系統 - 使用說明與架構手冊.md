@@ -26,63 +26,143 @@
 
 ## 詳細完整流程圖
 
-🚗 RDKS 爬蟲系統運作流程圖 (完整架構版)
+# 🚗 RDKS 爬蟲系統核心架構圖 (Pro 專業版)
 
-此版本詳實記錄了系統底層的每一道邏輯防線、迴圈控制與異常處理機制。
+本版本致敬高階系統架構圖風格，採用暗色模組劃分、全彩狀態標示，並完整收錄 7 天週期、API 雙軌抓取與優雅中斷防護的所有底層邏輯。
+
 ```mermaid
-flowchart TD
-    Start([在 VS Code 手動點擊 Run 啟動]) --> InstallReq["自動檢查並安裝缺失套件\n(包含突破 uv/PEP 668 限制)"]
-    InstallReq --> LoadProg["讀取 scrape_progress_weekly.json 紀錄"]
+flowchart LR
+
+    %% ==========================================
+    %% 視覺樣式定義 (致敬參考圖配色)
+    %% ==========================================
+    classDef startEnd fill:#fff,stroke:#333,stroke-width:2px,color:#000,font-weight:bold;
+    classDef diamond fill:#fff,stroke:#555,stroke-width:2px,color:#000,font-weight:bold;
     
-    LoadProg --> Check7Days{"距離上次「全新掃描」\n是否超過 7 天?"}
+    classDef greenBox fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20,font-weight:bold;
+    classDef redBox fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#b71c1c,font-weight:bold;
+    classDef actionBox fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1,font-weight:bold;
+    classDef dbBox fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#e65100,font-weight:bold;
+    classDef warningBox fill:#fff8e1,stroke:#fbc02d,stroke-width:2px,color:#f57f17,font-weight:bold;
+
+    %% ==========================================
+    %% ① 啟動前進度檢查
+    %% ==========================================
+    subgraph SG1 ["① 啟動前進度檢查"]
+        direction TB
+        S1([系統啟動]) ::: startEnd --> S2["自動檢查/安裝缺失套件\n(突破環境限制)"] ::: actionBox
+        S2 --> S3{"讀取\nscrape_progress.json"} ::: diamond
+        S3 --> S4{"距離上次掃描\n< 7 天?"} ::: diamond
+        
+        S4 -- 否 (>7天) --> S5["全新週期\n清空舊斷點紀錄\n開始全新掃描"] ::: redBox
+        S4 -- 是 (<7天) --> S6["接續執行\n載入中斷之品牌\n(last_brand)"] ::: greenBox
+    end
+    style SG1 fill:#2d2d2d,stroke:#555,color:#fff
+
+    %% ==========================================
+    %% ② 資料庫與導航
+    %% ==========================================
+    subgraph SG2 ["② 資料庫與爬蟲導航"]
+        direction TB
+        D1[("建立 SQLite 與表單\n建立 SQL View 視圖")] ::: dbBox
+        D2{"遍歷 品牌 (Brand)\n是否需略過?"} ::: diamond
+        D3["跳過此品牌"] ::: default
+        D4["儲存進度 (JSON)"] ::: actionBox
+        D5["遍歷車系 (Model)\n遍歷型號 (Typ)\n遍歷年份 (Year)"] ::: actionBox
+
+        D1 --> D2
+        D2 -- 是 (未達斷點) --> D3 --> D2
+        D2 -- 否 (進入斷點) --> D4 --> D5
+    end
+    style SG2 fill:#2d2d2d,stroke:#555,color:#fff
+
+    %% ==========================================
+    %% ③ 靜態 API 攔截與解析
+    %% ==========================================
+    subgraph SG3 ["③ 靜態 API 攔截與解析"]
+        direction TB
+        A1["呼叫 API 1: 取得基礎資料\n(HSN / TSN)"] ::: actionBox
+        A2{"包含 OE 原廠\n感測器?"} ::: diamond
+        A3["寫入空值保留車型"] ::: warningBox
+        A4["呼叫 API 2: 批次取得\n感測器深度詳細資訊"] ::: actionBox
+        A5["解析字串與防呆提取:\n廠商 / 頻率 / 日期"] ::: greenBox
+        A6["加入暫存佇列\nbatch_data"] ::: actionBox
+
+        A1 --> A2
+        A2 -- 無 --> A3 --> A6
+        A2 -- 有 --> A4 --> A5 --> A6
+    end
+    style SG3 fill:#2d2d2d,stroke:#555,color:#fff
+
+    %% ==========================================
+    %% ④ 資料寫入與聚合
+    %% ==========================================
+    subgraph SG4 ["④ 資料寫入與聚合"]
+        direction TB
+        W1{"暫存佇列\n> 80 筆?"} ::: diamond
+        W2[("寫入 SQLite 資料庫\n(REPLACE INTO 去重)")] ::: dbBox
+        W3["清空暫存區"] ::: default
+
+        W1 -- 是 --> W2 --> W3
+    end
+    style SG4 fill:#2d2d2d,stroke:#555,color:#fff
+
+    %% ==========================================
+    %% ⑤ 防護與錯誤恢復
+    %% ==========================================
+    subgraph SG5 ["⑤ 防護與錯誤恢復"]
+        direction TB
+        E1{"攔截 Ctrl+C 或中斷訊號\n(signal_handler)"} ::: redBox
+        E2["觸發 graceful_stop = True"] ::: warningBox
+        E3[("強制寫入殘留暫存\n保護當前斷點")] ::: dbBox
+
+        E1 -- 觸發 --> E2 --> E3
+    end
+    style SG5 fill:#2d2d2d,stroke:#555,color:#fff
+
+    %% ==========================================
+    %% ⑥ 匯出與收尾管理
+    %% ==========================================
+    subgraph SG6 ["⑥ 匯出與收尾管理"]
+        direction TB
+        F1["該品牌遍歷完畢"] ::: actionBox
+        F2["透過 SQL View 查詢\n(GROUP_CONCAT 壓縮重複列)"] ::: actionBox
+        F3["匯出 Brand_Data.xlsx"] ::: greenBox
+        F4{"所有品牌完成?"} ::: diamond
+        F5["標記任務完成\n清除斷點"] ::: greenBox
+        F6[("匯出 .sql 備份檔")] ::: dbBox
+        F7([程式安全退出]) ::: startEnd
+
+        F1 --> F2 --> F3 --> F4
+        F4 -- 是 --> F5 --> F6 --> F7
+    end
+    style SG6 fill:#2d2d2d,stroke:#555,color:#fff
+
+    %% ==========================================
+    %% 模組間核心連線 (跨區塊動線)
+    %% ==========================================
     
-    Check7Days -- 是 (超過 7 天) --> FullMode["啟動【全面更新模式】\n清除斷點紀錄，準備從頭掃描"]
-    Check7Days -- 否 (7 天內) --> ResumeMode["啟動【繼續進度模式】\n讀取上次中斷的品牌/車系斷點"]
+    %% 啟動 -> 導航
+    S5 --> D1
+    S6 --> D1
     
-    FullMode --> SetupDB[("建立/連接 SQLite 資料庫")]
-    ResumeMode --> SetupDB
+    %% 導航 -> API
+    D5 ==>|執行迴圈| E1
+    E1 -- 否 (平穩運行) --> A1
     
-    SetupDB --> InitView[("建立 SQL View 視圖\n(設定自動壓縮與合併邏輯)")]
+    %% API -> 寫入
+    A6 ==> W1
     
-    InitView --> BrandLoop["遍歷所有汽車品牌 (Brand)"]
+    %% 寫入 -> 導航 (迴圈返回)
+    W1 -- 否 --> D5
+    W3 --> D5
     
-    BrandLoop --> CheckSkip{"品牌是否需要略過?\n(因還沒到達斷點)"}
-    CheckSkip -- 是 --> SkipBrand["跳過此品牌"] --> BrandLoop
-    CheckSkip -- 否 --> SaveProg["儲存目前進度 (更新 JSON)"]
-    
-    SaveProg --> ClassLoop["遍歷該品牌所有車系 (Model)"]
-    ClassLoop --> TGLoop["遍歷型號 (Typ)"]
-    TGLoop --> VersionLoop["依年份從新到舊排序版本"]
-    
-    VersionLoop --> CheckManualStop{"使用者是否按下\nCtrl+C 或 停止鍵?"}
-    
-    CheckManualStop -- 是 --> GracefulStop(["觸發安全中斷訊號"])
-    CheckManualStop -- 否 --> ApiCall1["呼叫 API 1:\n取得基礎 TPMS 與 HSN/TSN"]
-    
-    ApiCall1 --> CheckOE{"是否有 OE 原廠感測器?"}
-    CheckOE -- 無 --> EmptyData["寫入空值保留車型"] --> AddBatch
-    CheckOE -- 有 --> ApiCall2["呼叫 API 2:\n批次取得感測器深度資訊"]
-    
-    ApiCall2 --> ParseData["解析感測器資訊\n(廠商, 頻率, 建造日期)"]
-    ParseData --> AddBatch["加入暫存佇列 batch_data"]
-    
-    AddBatch --> CheckBatch{"暫存累積超過 80 筆?"}
-    CheckBatch -- 是 --> SaveDB[("寫入資料庫\n(使用 REPLACE INTO 去重覆寫)")]
-    SaveDB --> ClearBatch["清空暫存區"] --> VersionLoop
-    CheckBatch -- 否 --> VersionLoop
-    
-    VersionLoop -- 版本處理完畢 --> TGLoop
-    TGLoop -- 型號處理完畢 --> FlushRemain[("強制寫入殘留暫存資料")]
-    FlushRemain --> ClassLoop
-    
-    ClassLoop -- 車系處理完畢 --> ExportExcel["查詢 SQL View\n匯出 Excel 壓縮報表"]
-    ExportExcel --> BrandLoop
-    
-    BrandLoop -- 所有品牌處理完畢 --> Finalize["清除斷點紀錄，標記本輪任務完成"]
-    
-    GracefulStop --> ExportSQL[("匯出 .sql 備份檔")]
-    Finalize --> ExportSQL
-    ExportSQL --> End(["程式安全結束"])
+    %% 導航 -> 匯出
+    D5 -. 該品牌結束 .-> F1
+    F4 -- 否 (回到下一品牌) --> D2
+
+    %% 中斷 -> 備份退出
+    E3 ===> F6
 
 ```
 
