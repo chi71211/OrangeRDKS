@@ -38,7 +38,6 @@ flowchart LR
     %% ==========================================
     classDef startEnd fill:#fff,stroke:#333,stroke-width:2px,color:#000,font-weight:bold;
     classDef diamond fill:#fff,stroke:#555,stroke-width:2px,color:#000,font-weight:bold;
-    
     classDef greenBox fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20,font-weight:bold;
     classDef redBox fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#b71c1c,font-weight:bold;
     classDef actionBox fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1,font-weight:bold;
@@ -50,12 +49,12 @@ flowchart LR
     %% ==========================================
     subgraph SG1 ["① 啟動前進度檢查"]
         direction TB
-        S1([系統啟動]) ::: startEnd --> S2["自動檢查/安裝缺失套件\n(突破環境限制)"] ::: actionBox
-        S2 --> S3{"讀取\nscrape_progress.json"} ::: diamond
-        S3 --> S4{"距離上次掃描\n< 7 天?"} ::: diamond
+        S1([系統啟動]) --> S2["自動檢查/安裝缺失套件\n(突破環境限制)"]
+        S2 --> S3{"讀取\nscrape_progress.json"}
+        S3 --> S4{"距離上次掃描\n< 7 天?"}
         
-        S4 -- 否 (>7天) --> S5["全新週期\n清空舊斷點紀錄\n開始全新掃描"] ::: redBox
-        S4 -- 是 (<7天) --> S6["接續執行\n載入中斷之品牌\n(last_brand)"] ::: greenBox
+        S4 -- 否 (>7天) --> S5["全新週期\n清空舊斷點紀錄\n開始全新掃描"]
+        S4 -- 是 (<7天) --> S6["接續執行\n載入中斷之品牌\n(last_brand)"]
     end
     style SG1 fill:#2d2d2d,stroke:#555,color:#fff
 
@@ -64,11 +63,11 @@ flowchart LR
     %% ==========================================
     subgraph SG2 ["② 資料庫與爬蟲導航"]
         direction TB
-        D1[("建立 SQLite 與表單\n建立 SQL View 視圖")] ::: dbBox
-        D2{"遍歷 品牌 (Brand)\n是否需略過?"} ::: diamond
-        D3["跳過此品牌"] ::: default
-        D4["儲存進度 (JSON)"] ::: actionBox
-        D5["遍歷車系 (Model)\n遍歷型號 (Typ)\n遍歷年份 (Year)"] ::: actionBox
+        D1[("建立 SQLite 與表單\n建立 SQL View 視圖")]
+        D2{"遍歷 品牌 (Brand)\n是否需略過?"}
+        D3["跳過此品牌"]
+        D4["儲存進度 (JSON)"]
+        D5["遍歷車系 (Model)\n遍歷型號 (Typ)\n遍歷年份 (Year)"]
 
         D1 --> D2
         D2 -- 是 (未達斷點) --> D3 --> D2
@@ -81,12 +80,12 @@ flowchart LR
     %% ==========================================
     subgraph SG3 ["③ 靜態 API 攔截與解析"]
         direction TB
-        A1["呼叫 API 1: 取得基礎資料\n(HSN / TSN)"] ::: actionBox
-        A2{"包含 OE 原廠\n感測器?"} ::: diamond
-        A3["寫入空值保留車型"] ::: warningBox
-        A4["呼叫 API 2: 批次取得\n感測器深度詳細資訊"] ::: actionBox
-        A5["解析字串與防呆提取:\n廠商 / 頻率 / 日期"] ::: greenBox
-        A6["加入暫存佇列\nbatch_data"] ::: actionBox
+        A1["呼叫 API 1: 取得基礎資料\n(HSN / TSN)"]
+        A2{"包含 OE 原廠\n感測器?"}
+        A3["寫入空值保留車型"]
+        A4["呼叫 API 2: 批次取得\n感測器深度詳細資訊"]
+        A5["解析字串與防呆提取:\n廠商 / 頻率 / 日期"]
+        A6["加入暫存佇列\nbatch_data"]
 
         A1 --> A2
         A2 -- 無 --> A3 --> A6
@@ -99,9 +98,9 @@ flowchart LR
     %% ==========================================
     subgraph SG4 ["④ 資料寫入與聚合"]
         direction TB
-        W1{"暫存佇列\n> 80 筆?"} ::: diamond
-        W2[("寫入 SQLite 資料庫\n(REPLACE INTO 去重)")] ::: dbBox
-        W3["清空暫存區"] ::: default
+        W1{"暫存佇列\n> 80 筆?"}
+        W2[("寫入 SQLite 資料庫\n(REPLACE INTO 去重)")]
+        W3["清空暫存區"]
 
         W1 -- 是 --> W2 --> W3
     end
@@ -112,9 +111,9 @@ flowchart LR
     %% ==========================================
     subgraph SG5 ["⑤ 防護與錯誤恢復"]
         direction TB
-        E1{"攔截 Ctrl+C 或中斷訊號\n(signal_handler)"} ::: redBox
-        E2["觸發 graceful_stop = True"] ::: warningBox
-        E3[("強制寫入殘留暫存\n保護當前斷點")] ::: dbBox
+        E1{"攔截 Ctrl+C 或中斷訊號\n(signal_handler)"}
+        E2["觸發 graceful_stop = True"]
+        E3[("強制寫入殘留暫存\n保護當前斷點")]
 
         E1 -- 觸發 --> E2 --> E3
     end
@@ -125,13 +124,13 @@ flowchart LR
     %% ==========================================
     subgraph SG6 ["⑥ 匯出與收尾管理"]
         direction TB
-        F1["該品牌遍歷完畢"] ::: actionBox
-        F2["透過 SQL View 查詢\n(GROUP_CONCAT 壓縮重複列)"] ::: actionBox
-        F3["匯出 Brand_Data.xlsx"] ::: greenBox
-        F4{"所有品牌完成?"} ::: diamond
-        F5["標記任務完成\n清除斷點"] ::: greenBox
-        F6[("匯出 .sql 備份檔")] ::: dbBox
-        F7([程式安全退出]) ::: startEnd
+        F1["該品牌遍歷完畢"]
+        F2["透過 SQL View 查詢\n(GROUP_CONCAT 壓縮重複列)"]
+        F3["匯出 Brand_Data.xlsx"]
+        F4{"所有品牌完成?"}
+        F5["標記任務完成\n清除斷點"]
+        F6[("匯出 .sql 備份檔")]
+        F7([程式安全退出])
 
         F1 --> F2 --> F3 --> F4
         F4 -- 是 --> F5 --> F6 --> F7
@@ -164,6 +163,17 @@ flowchart LR
     %% 中斷 -> 備份退出
     E3 ===> F6
 
+
+    %% ==========================================
+    %% 統一套用顏色類別 (GitHub 100% 相容寫法)
+    %% ==========================================
+    class S1,F7 startEnd;
+    class S3,S4,D2,A2,W1,F4 diamond;
+    class S6,A5,F3,F5 greenBox;
+    class S5,E1 redBox;
+    class S2,D4,D5,A1,A4,A6,F1,F2 actionBox;
+    class D1,W2,E3,F6 dbBox;
+    class A3,E2 warningBox;
 ```
 
 ---
